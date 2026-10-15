@@ -88,23 +88,20 @@ impl ApplicationHandler for App {
 
                     @vertex
                     fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
-                        var pos = array<vec2<f32>, 4>(
-                            vec2<f32>(-0.6,  0.6),
+                        var pos = array<vec2<f32>, 3>(
+                            vec2<f32>(0,  0.6),
                             vec2<f32>(-0.6, -0.6),
-                            vec2<f32>( 0.6, -0.6),
-                            vec2<f32>( 0.6,  0.6)
+                            vec2<f32>( 0.6, -0.6)
                         );
 
-                        var colors = array<vec3<f32>, 4>(
+                        var colors = array<vec3<f32>, 3>(
                             vec3<f32>(1.0, 0.0, 0.0),
                             vec3<f32>(0.0, 1.0, 0.0),
-                            vec3<f32>(0.0, 0.0, 1.0),
-                            vec3<f32>(1.0, 1.0, 0.0)
+                            vec3<f32>(0.0, 0.0, 1.0)
                         );
 
-                        var indices = array<u32, 6>(
-                            0, 1, 2,
-                            0, 2, 3
+                        var indices = array<u32, 3>(
+                            0, 1, 2
                         );
 
                         let vertex_index = indices[in_vertex_index];
@@ -183,6 +180,17 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit()
+            }
+            WindowEvent::Resized(size) => {
+                let Some(state) = &mut self.state else { return; };
+
+                let config = &mut state.config;
+                let width = size.width.max(1);
+                let height = size.height.max(1);
+
+                config.width = width;
+                config.height = height;
+                state.surface.configure(&state.device, &state.config);
             }
             WindowEvent::RedrawRequested => {
                 let Some(state) = &self.state else { return; };
