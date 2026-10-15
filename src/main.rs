@@ -14,6 +14,7 @@ struct AppState {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    // move to specific pipelines struct
     render_pipeline: wgpu::RenderPipeline,
     window: Arc<Window>,
 }
@@ -234,7 +235,7 @@ impl ApplicationHandler for App {
                     });
 
                     render_pass.set_pipeline(&state.render_pipeline);
-                    render_pass.draw(0..6, 0..1);
+                    render_pass.draw(0..3, 0..1);
                 }
 
                 state.queue.submit(std::iter::once(encoder.finish()));
