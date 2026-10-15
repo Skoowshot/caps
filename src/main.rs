@@ -10,12 +10,12 @@ struct App {
 }
 
 struct AppState {
-    window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    window: Arc<Window>,
 }
 
 impl ApplicationHandler for App {
