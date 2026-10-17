@@ -1,13 +1,20 @@
 use std::error::Error;
 use std::sync::Arc;
+use wgpu::BindGroupLayout;
+use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
-use crate::state;
+use crate::{gfx_init, render_pipeline, state, window_helpers};
+use crate::camera::{Camera, CameraUniform, Projection};
+use crate::renderer::Renderer;
+use crate::state::CameraState;
+use crate::voxel::render::VoxelInstance;
 
 pub struct App {
     pub running_state: Option<state::RunningState>,
+    pub angle: f32,
 }
 
 impl ApplicationHandler for App {
@@ -30,7 +37,7 @@ impl ApplicationHandler for App {
                 let graphics_state = &mut running_state.graphics_state;
 
                 let config = &mut graphics_state.config;
-                let (width, height) = get_surface_size(&running_state.window);
+                let (width, height) = window_helpers::get_surface_size(&running_state.window);
 
                 config.width = width;
                 config.height = height;
@@ -41,53 +48,37 @@ impl ApplicationHandler for App {
                 )
             }
             WindowEvent::RedrawRequested => {
-                let Some(running_state) = &self.running_state else { return; };
+                let Some(running_state) = &mut self.running_state else { return; };
                 let graphics_state = &running_state.graphics_state;
 
-                let frame = match graphics_state.surface.get_current_texture() {
-                    Ok(frame) => frame,
-                    Err(_) => {
-                        graphics_state.surface.configure(&graphics_state.device, &graphics_state.config);
-                        graphics_state.surface.get_current_texture().expect("failed to acquire next texture")
-                    }
-                };
+                self.angle += 0.001;
 
-                let view = frame
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let radius = 5.0;
 
-                let mut encoder =
-                    graphics_state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Render Encoder")
-                    });
+                running_state.camera.camera.position.x = self.angle.cos() * radius;
+                running_state.camera.camera.position.z = self.angle.sin() * radius;
+                running_state.camera.camera.position.y = 3.0;
 
-                {
-                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Render Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.01,
-                                    g: 0.01,
-                                    b: 0.015,
-                                    a: 1.0
-                                }),
-                                store: wgpu::StoreOp::Store
-                            }
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
+                running_state.camera.camera.target.x += self.angle.cos() * 0.0001;
 
-                    render_pass.set_pipeline(&running_state.render_pipelines.render_pipeline);
-                    render_pass.draw(0..3, 0..1);
-                }
+                let mut camera_uniform = CameraUniform::new();
+                camera_uniform.update_view_proj(&running_state.camera.camera, &running_state.camera.projection);
 
-                graphics_state.queue.submit(std::iter::once(encoder.finish()));
-                frame.present();
+                running_state.graphics_state.queue.write_buffer(
+                    &running_state.camera.camera_buffer,
+                    0,
+                    bytemuck::cast_slice(&[camera_uniform]),
+                );
+
+
+                running_state.renderer.redraw(
+                    &graphics_state.surface,
+                    &graphics_state.config,
+                    &graphics_state.device,
+                    &graphics_state.queue,
+                    &running_state.render_pipelines,
+                    &running_state.camera.camera_bind_group
+                ).expect("failed to redraw");
 
                 running_state.window.request_redraw()
             }
@@ -101,17 +92,22 @@ impl App {
         self.running_state.is_some()
     }
 
-    pub fn create_running_state(&self, event_loop: &ActiveEventLoop) -> Result<state::RunningState, Box<dyn Error>> {
-        let window = event_loop
-            .create_window(Window::default_attributes().with_title("WGPU Test"))?;
-        let window_arc = Arc::new(window);
-
+    pub fn create_running_state(&mut self, event_loop: &ActiveEventLoop) -> Result<state::RunningState, Box<dyn Error>> {
+        let window_arc = window_helpers::create_arc_window(event_loop, "WGPU Test")?;
         let graphics_state = self.create_graphics_state(window_arc.clone(), event_loop)?;
-        let render_pipelines = self.create_graphics_pipelines(&graphics_state.device, &graphics_state.config)?;
+        let camera_state = self.create_camera_state(&graphics_state.device);
+        let render_pipelines = self.create_graphics_pipelines(&graphics_state.device, &graphics_state.config, &camera_state.camera_bind_group_layout)?;
+        let renderer = Renderer {
+            depth_texture_view: None,
+            voxel_buffer: None,
+            num_voxels: 0,
+        };
 
         Ok(state::RunningState {
             graphics_state,
+            camera: camera_state,
             render_pipelines,
+            renderer,
             window: window_arc,
         })
     }
@@ -120,12 +116,12 @@ impl App {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         pollster::block_on(async {
             let surface = instance.create_surface(window.clone())?;
-            let adapter = self.create_adapter(&instance, &surface).await?;
-            let (device, queue) = self.create_device_and_queue(&adapter).await?;
-            let (width, height) = get_surface_size(&window);
+            let adapter = gfx_init::create_adapter(&instance, &surface).await?;
+            let (device, queue) = gfx_init::create_device_and_queue(&adapter).await?;
+            let (width, height) = window_helpers::get_surface_size(&window);
             let surface_capabilities = surface.get_capabilities(&adapter);
-            let surface_format = self.find_surface_format(&surface_capabilities);
-            let config = self.create_surface_configuration(&surface_capabilities, surface_format, width, height);
+            let surface_format = gfx_init::find_surface_format(&surface_capabilities);
+            let config = gfx_init::create_surface_configuration(&surface_capabilities, surface_format, width, height);
 
             surface.configure(&device, &config);
 
@@ -139,161 +135,70 @@ impl App {
     }
 
     pub fn create_graphics_pipelines(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-    ) -> Result<state::RenderPipelines, Box<dyn Error>> {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Triangle Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                r#"
-                    struct VertexOutput {
-                        @builtin(position) position: vec4<f32>,
-                        @location(0) color: vec3<f32>,
-                    };
+        camera_bind_group_layout: &BindGroupLayout,
+    ) -> Result<render_pipeline::RenderPipelines, Box<dyn Error>> {
+        let voxel_pipeline = render_pipeline::create_pipeline(
+            &device,
+            &config,
+            &[VoxelInstance::desc()],
+            &[camera_bind_group_layout],
+            "shaders/voxel.wgsl"
+        )?;
 
-                    @vertex
-                    fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
-                        var pos = array<vec2<f32>, 3>(
-                            vec2<f32>(0,  0.6),
-                            vec2<f32>(-0.6, -0.6),
-                            vec2<f32>( 0.6, -0.6)
-                        );
-
-                        var colors = array<vec3<f32>, 3>(
-                            vec3<f32>(1.0, 0.0, 0.0),
-                            vec3<f32>(0.0, 1.0, 0.0),
-                            vec3<f32>(0.0, 0.0, 1.0)
-                        );
-
-                        var indices = array<u32, 3>(
-                            0, 1, 2
-                        );
-
-                        let vertex_index = indices[in_vertex_index];
-
-                        var out: VertexOutput;
-                        out.position = vec4<f32>(pos[vertex_index], 0.0, 1.0);
-                        out.color = colors[vertex_index];
-                        return out;
-                    }
-
-                    @fragment
-                    fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-                        return vec4<f32>(in.color, 1.0);
-                    }
-                    "#
-                    .into(),
-            ),
-        });
-
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
-                push_constant_ranges: &[],
-            });
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
-
-        Ok(state::RenderPipelines {
-            render_pipeline
+        Ok(render_pipeline::RenderPipelines {
+            voxel_pipeline
         })
     }
 
-    pub async fn create_adapter<'a>(&self, instance: &wgpu::Instance, surface: &wgpu::Surface<'a>) -> Result<wgpu::Adapter, Box<dyn Error>> {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .ok_or("failed to find an appropriate adapter")?;
+    pub fn create_camera_state(&self, device: &wgpu::Device) -> state::CameraState {
+        let mut camera_uniform = CameraUniform::new();
+        let camera = Camera {
+            position: (0.0, 3.0, 5.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: cgmath::Vector3::unit_y(),
+        };
+        let projection = Projection::new(800, 600, 45.0, 0.1, 100.0);
+        camera_uniform.update_view_proj(&camera, &projection);
 
-        Ok(adapter)
-    }
-
-    pub async fn create_device_and_queue(&self, adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), Box<dyn Error>> {
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                label: None
-            }, None)
-            .await?;
-
-        Ok((device, queue))
-    }
-
-    pub fn find_surface_format(&self, surface_capabilities: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
-        surface_capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_capabilities.formats[0])
-    }
-
-    pub fn create_surface_configuration(
-        &self,
-        surface_capabilities: &wgpu::SurfaceCapabilities,
-        surface_format: wgpu::TextureFormat,
-        width: u32,
-        height: u32
-    ) -> wgpu::SurfaceConfiguration {
-        wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width,
-            height,
-            present_mode: surface_capabilities.present_modes[0],
-            alpha_mode: surface_capabilities.alpha_modes[0],
-            desired_maximum_frame_latency: 2,
-            view_formats: vec![]
+        let camera_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Buffer"),
+                contents: bytemuck::cast_slice(&[camera_uniform]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("camera_bind_group_layout"),
+        });
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }
+            ],
+            label: Some("camera_bind_group"),
+        });
+        CameraState {
+            camera,
+            camera_buffer,
+            projection,
+            camera_bind_group_layout,
+            camera_bind_group
         }
     }
-}
-
-pub fn get_surface_size(window: &Window) -> (u32, u32) {
-    let size = window.inner_size();
-    let width = size.width.max(1);
-    let height = size.height.max(1);
-
-    (width, height)
 }
