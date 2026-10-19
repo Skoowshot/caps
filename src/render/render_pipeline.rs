@@ -10,17 +10,18 @@ pub fn create_pipeline(
     config: &wgpu::SurfaceConfiguration,
     buffers: &[wgpu::VertexBufferLayout],
     bind_group_layouts: &[&wgpu::BindGroupLayout],
+    depth_stencil: bool,
     shader_path: &str,
 ) -> Result<wgpu::RenderPipeline, Box<dyn Error>> {
     let shader_source = fs::read_to_string(shader_path)?;
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(&format!("shader: {}", shader_path)),
+        label: Some(&format!("shader:{}", shader_path)),
         source: wgpu::ShaderSource::Wgsl(shader_source.into())
     });
 
     let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some(&format!("render_pipeline_layout: {}", shader_path)),
+        label: Some(&format!("render_pipeline_layout:{}", shader_path)),
         bind_group_layouts,
         push_constant_ranges: &[],
     });
@@ -28,39 +29,17 @@ pub fn create_pipeline(
     let render_targets = create_render_target_states(config.format);
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(&format!("render_pipeline: {}", shader_path)),
+        label: Some(&format!("render_pipeline:{}", shader_path)),
         layout: Some(&render_pipeline_layout),
         vertex: create_vertex_state(&shader, buffers),
         fragment: Some(create_fragment_state(&shader, &render_targets)),
         primitive: create_primitive_state(),
-        depth_stencil: Some(create_depth_stencil_state()),
+        depth_stencil: if depth_stencil { Some(create_depth_stencil_state()) } else { None },
         multisample: create_multisample_state(),
         multiview: None,
     });
 
     Ok(render_pipeline)
-}
-
-pub fn create_depth_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
-    let size = wgpu::Extent3d {
-        width: config.width,
-        height: config.height,
-        depth_or_array_layers: 1,
-    };
-
-    let desc = wgpu::TextureDescriptor {
-        label: Some("Depth Texture"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth32Float,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    };
-
-    let texture = device.create_texture(&desc);
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 pub fn create_vertex_state<'a>(

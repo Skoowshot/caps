@@ -1,13 +1,14 @@
 use std::sync::Arc;
 use winit::window::Window;
-use crate::{render_pipeline, renderer};
-use crate::camera::{Camera, Projection};
+use crate::bind_groups::BindGroups;
+use crate::render::render_pipeline::RenderPipelines;
+use crate::render::renderer::Renderer;
 
 pub struct RunningState {
     pub graphics_state: GraphicsState,
-    pub render_pipelines: render_pipeline::RenderPipelines,
-    pub renderer: renderer::Renderer,
-    pub camera: CameraState,
+    pub render_pipelines: RenderPipelines,
+    pub renderer: Renderer,
+    pub bind_groups: BindGroups,
     pub window: Arc<Window>,
 }
 
@@ -16,12 +17,4 @@ pub struct GraphicsState {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
-}
-
-pub struct CameraState {
-    pub camera_bind_group_layout: wgpu::BindGroupLayout,
-    pub camera_bind_group: wgpu::BindGroup,
-    pub camera_buffer: wgpu::Buffer,
-    pub camera: Camera,
-    pub projection: Projection,
 }

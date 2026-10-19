@@ -7,6 +7,7 @@ struct VoxelInstance {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) @interpolate(flat) face: u32,
 }
 
 struct CameraUniform {
@@ -43,15 +44,18 @@ fn vs_main(
     let vertex_index = cube_indices[in_vertex_index];
     let local_pos = cube_vertices[vertex_index];
 
-    let world_pos = local_pos * voxel.size + voxel.position;
+    let base_pos = local_pos * voxel.size + voxel.position;
+    let world_pos = base_pos;
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.color = voxel.color;
+    out.face = in_vertex_index / 6;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
+    let face_f = f32(in.face)/4.0 + 1.0;
+    return vec4(in.color.rgb / face_f, in.color.a);
 }
